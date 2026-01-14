@@ -3,8 +3,8 @@
 
 import glob as globlib, json, os, re, subprocess, urllib.request
 
-API_URL = "https://api.anthropic.com/v1/messages"
-MODEL = "claude-opus-4-5"
+API_URL = "http://10.86.32.115:8080/v1/chat/completions"
+MODEL = "glm-4.7-fp8"
 
 # ANSI colors
 RESET, BOLD, DIM = "\033[0m", "\033[1m", "\033[2m"
@@ -139,12 +139,15 @@ def make_schema():
                 required.append(param_name)
         result.append(
             {
-                "name": name,
-                "description": description,
-                "input_schema": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
                 },
             }
         )
@@ -152,21 +155,20 @@ def make_schema():
 
 
 def call_api(messages, system_prompt):
+    all_messages = [{"role": "system", "content": system_prompt}] + messages
     request = urllib.request.Request(
         API_URL,
         data=json.dumps(
             {
                 "model": MODEL,
-                "max_tokens": 8192,
-                "system": system_prompt,
-                "messages": messages,
+                "max_tokens": 16384,
+                "messages": all_messages,
                 "tools": make_schema(),
             }
         ).encode(),
         headers={
             "Content-Type": "application/json",
-            "x-api-key": os.environ.get("ANTHROPIC_API_KEY", ""),
-            "anthropic-version": "2023-06-01",
+            "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY', '')}",
         },
     )
     response = urllib.request.urlopen(request)
@@ -205,43 +207,49 @@ def main():
             # agentic loop: keep calling API until no more tool calls
             while True:
                 response = call_api(messages, system_prompt)
-                content_blocks = response.get("content", [])
+                choice = response.get("choices", [{}])[0]
+                message = choice.get("message", {})
+                content = message.get("content")
+                tool_calls = message.get("tool_calls") or []
+
+                if content:
+                    print(f"\n{CYAN}⏺{RESET} {render_markdown(content)}")
+
                 tool_results = []
+                for tool_call in tool_calls:
+                    tool_name = tool_call["function"]["name"]
+                    tool_args = json.loads(tool_call["function"]["arguments"])
+                    arg_preview = str(list(tool_args.values())[0])[:50] if tool_args else ""
+                    print(
+                        f"\n{GREEN}⏺ {tool_name.capitalize()}{RESET}({DIM}{arg_preview}{RESET})"
+                    )
 
-                for block in content_blocks:
-                    if block["type"] == "text":
-                        print(f"\n{CYAN}⏺{RESET} {render_markdown(block['text'])}")
+                    result = run_tool(tool_name, tool_args)
+                    result_lines = result.split("\n")
+                    preview = result_lines[0][:60]
+                    if len(result_lines) > 1:
+                        preview += f" ... +{len(result_lines) - 1} lines"
+                    elif len(result_lines[0]) > 60:
+                        preview += "..."
+                    print(f"  {DIM}⎿  {preview}{RESET}")
 
-                    if block["type"] == "tool_use":
-                        tool_name = block["name"]
-                        tool_args = block["input"]
-                        arg_preview = str(list(tool_args.values())[0])[:50]
-                        print(
-                            f"\n{GREEN}⏺ {tool_name.capitalize()}{RESET}({DIM}{arg_preview}{RESET})"
-                        )
+                    tool_results.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result,
+                        }
+                    )
 
-                        result = run_tool(tool_name, tool_args)
-                        result_lines = result.split("\n")
-                        preview = result_lines[0][:60]
-                        if len(result_lines) > 1:
-                            preview += f" ... +{len(result_lines) - 1} lines"
-                        elif len(result_lines[0]) > 60:
-                            preview += "..."
-                        print(f"  {DIM}⎿  {preview}{RESET}")
-
-                        tool_results.append(
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block["id"],
-                                "content": result,
-                            }
-                        )
-
-                messages.append({"role": "assistant", "content": content_blocks})
+                # Build assistant message for history
+                assistant_msg = {"role": "assistant", "content": content}
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                messages.append(assistant_msg)
 
                 if not tool_results:
                     break
-                messages.append({"role": "user", "content": tool_results})
+                messages.extend(tool_results)
 
             print()
 

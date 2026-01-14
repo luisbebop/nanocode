@@ -16,7 +16,7 @@ Built using Claude Code, then used to build itself.
 ## Usage
 
 ```bash
-export ANTHROPIC_API_KEY="your-key"
+export OPENAI_API_KEY="your-key"
 python nanocode.py
 ```
 
