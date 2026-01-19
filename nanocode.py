@@ -110,7 +110,7 @@ TOOLS = {
         grep,
     ),
     "bash": (
-        "Run shell command",
+        "Run shell command. Look at the cli you have in your running directory to help you do stuff. they start with cli-*",
         {"cmd": "string"},
         bash,
     ),
